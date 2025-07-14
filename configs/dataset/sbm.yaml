@@ -1,0 +1,5 @@
+name: sbm
+remove_h: null
+datadir: 'data/sbm/'
+
+directed: False

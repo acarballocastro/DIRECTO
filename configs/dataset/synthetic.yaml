@@ -1,0 +1,15 @@
+name: synthetic
+datadir: 'data/synthetic'
+
+directed: True
+
+num_nodes: 64
+degree: 5
+graph_type: 'er' # Available types: ['er' (Erdos-Renyi), 'ba' (Barabasi-Albert), 'planar', 'sbm', 'full']
+p_threshold: 0.6
+w_min: 0.5
+w_max: 0.5
+num_graphs_train: 128 
+num_graphs_val: 32 
+num_graphs_test: 40 
+acyclic: False

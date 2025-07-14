@@ -1,0 +1,28 @@
+# @package _global_
+general:
+    name : 'synthetic'
+    gpus : 1
+    wandb: 'online'
+    resume: null            # If resume, path to ckpt file from outputs directory in main directory
+    test_only: null
+    check_val_every_n_epochs: 100
+    sample_every_val: 5    # Computes sampling metrics every sample_every_val*check_val_every_n_epochs
+    samples_to_generate: 40 #20
+    samples_to_save: 0 #20
+    chains_to_save: 1
+    log_every_steps: 20
+    number_chain_steps: 20        # Number of frames in each gif
+    final_model_samples_to_generate: 40
+    final_model_chains_to_save: 0 #10
+    final_model_samples_to_save: 0 #10
+
+train:
+    n_epochs: 100000
+    batch_size: 4
+    progress_bar: true
+    #save_model: True
+
+model:
+    extra_features: "eigenvalues" # 'eigenvalues' | 'magnetic-eigenvalues' | 'rrwp' | 'rrwp-ppr' | 'scc' | 'scc-rrwp' | 'scc-mageigenv' | 'rrwp-mageigenv' | 'null' \ 'all'
+    rrwp_steps: 10
+    restart_prob: 0.1

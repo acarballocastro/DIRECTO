@@ -1,0 +1,47 @@
+defaults:
+    - _self_
+    - general : general_default
+    - model : discrete
+    - train : train_default
+    - dataset : synthetic
+    - experiment : debug
+
+# General settings
+data:
+  type: BN
+  name: er_dag #tpu_tile
+  nvt: 1 #47  # Number of different node types
+  save_appendix: ''
+  save_interval: 20 
+  sample_number: 40
+  no_test: false
+  reprocess: false
+  keep_old: true
+  only_test: true
+  small_train: false
+
+# Model settings
+model:
+  name: DVAE
+  load_latest_model: false
+  continue_from: null
+  hs: 501  # Hidden size of GRUs
+  nz: 56   # Latent vector dimensions
+  bidirectional: false
+  predictor: false
+
+# Optimization settings
+optimization:
+  lr: 1e-4
+  epochs: 500
+  batch_size: 32
+  infer_batch_size: 128
+  no_cuda: false
+  all_gpus: false
+  seed: 1
+  
+
+# Wandb settings
+wandb:
+  name: 'ER-DAG'
+  mode: 'online' # "online" | "offline" | "disabled"

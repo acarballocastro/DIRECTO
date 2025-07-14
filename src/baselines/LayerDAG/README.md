@@ -1,0 +1,1 @@
+This code was reproduced and slightly adapted from the original paper *LayerDAG: A Layerwise Autoregressive Diffusion Model for Directed Acyclic Graph Generation* (Li *et al.*, 2025). Changes were made for data pre-processing. Their original code is available in [their GitHub repo](https://github.com/Graph-COM/LayerDAG).

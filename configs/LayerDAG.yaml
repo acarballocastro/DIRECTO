@@ -1,0 +1,71 @@
+general :
+  dataset: tpu_tile
+  conditional: false
+  patience: 10
+  seed: 0
+  num_threads: 16
+  wandb: 'disabled'
+
+sample:
+  model_path: 'model_path'
+  sample_size: 40
+  num_folds: 5
+  min_num_steps_n: 1
+  max_num_steps_n: 64
+  min_num_steps_e: 1
+  max_num_steps_e: 16
+
+node_count :
+  loader :
+    batch_size: 128
+    num_workers: 4
+  model :
+    x_n_emb_size: 64
+    pe_emb_size: 0 # default
+    y_emb_size: 0 # 256 
+    num_mpnn_layers: 3
+    pool: 'sum'
+  num_epochs : 500
+  optimizer :
+    lr: 0.0003
+    amsgrad: true
+
+node_pred :
+  T : 64
+  loader :
+    batch_size: 256
+    num_workers: 4
+  num_epochs : 700
+  graph_encoder :
+    x_n_emb_size: 512
+    pe_emb_size: 0 # default
+    y_emb_size: 0 # 512 
+    num_mpnn_layers: 2
+    pool: 'sum'
+  predictor :
+    t_emb_size: 256
+    out_hidden_size: 512
+    num_transformer_layers: 1
+    num_heads: 4
+    dropout: 0
+  optimizer :
+    lr: 0.0003
+    amsgrad: true
+
+edge_pred :
+  T : 16
+  loader :
+    batch_size: 256
+    num_workers: 4
+  num_epochs : 1000
+  graph_encoder :
+    x_n_emb_size: 256
+    pe_emb_size: 0 # default
+    y_emb_size: 0 # 64 
+    num_mpnn_layers: 4
+  predictor :
+    t_emb_size: 256
+    out_hidden_size: 320
+  optimizer :
+    lr: 0.0003
+    amsgrad: true

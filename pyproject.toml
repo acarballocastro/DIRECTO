@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "directo"
+version = "1.0.1"
+description = "Generating Directed Graphs with Asymmetric Encodings and Dual Attention"
+authors = [
+    { 
+        name = "Alba Carballo-Castro, Manuel Madeira, Yiming Qin, Dorina Thanou, Pascal Frossard", 
+        email = "alba.carballocastro@epfl.ch" 
+    }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+
+[tool.setuptools.packages.find]
+where = ["."]

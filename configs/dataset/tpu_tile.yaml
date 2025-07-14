@@ -1,0 +1,6 @@
+name: tpu_tile
+datadir: 'data/tpu_tile/'
+
+directed: True
+graph_type: 'tpu_tile'
+acyclic: True

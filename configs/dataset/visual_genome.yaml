@@ -1,0 +1,28 @@
+name: visual_genome
+datadir: 'data/visual_genome/'
+
+directed: True
+graph_type: 'visual_genome'
+acyclic: False
+
+# Data processing parameters
+# min_object_instances: 5
+# min_attribute_instances: 5
+# min_relationship_instances: 1
+# min_object_size: 8
+# min_objects_per_image: 3
+# min_relationships_per_image: 3
+# max_objects_per_image: 100
+# max_relationships_per_image: 100
+# max_attributes_per_image: 100
+num_objects: 20
+num_attributes: 20
+num_relationships: 20
+min_nodes_per_graph: 20
+max_nodes_per_graph: 40
+min_edges_per_graph: 25
+
+# (20,40,30) -> 78 graphs
+# (20,40,20) -> 939 graphs
+# (10,30,20) -> 456 graphs
+# (20,40,25) -> 317 graphs

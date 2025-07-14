@@ -1,0 +1,34 @@
+# Model settings
+type: 'discrete'  # 'discrete', 'continuous'
+backbone: 'flow' # 'diffusion'
+transition: 'marginal'                          # uniform or marginal
+model: 'graph_tf'
+diffusion_steps: 500
+diffusion_noise_schedule: 'cosine'              # 'cosine', 'polynomial_2'
+n_layers: 5
+pos_enc: 'none'                            # 'sinusoidal', 'none'
+
+
+extra_features:         # 'all', 'cycles', 'eigenvalues' or None
+
+# Do not set hidden_mlp_E, dim_ffE too high, computing large tensors on the edges is costly
+# At the moment (03/08), y contains quite little information
+hidden_mlp_dims: {'X': 256, 'E': 128, 'y': 128}
+
+# The dimensions should satisfy dx % n_head == 0
+hidden_dims : {'dx': 256, 'de': 64, 'dy': 64, 'n_head': 8, 'dim_ffX': 256, 'dim_ffE': 128, 'dim_ffy': 128}
+
+# Dimensions for the SPE network
+spe_dims: {'pe_dim': 10, 'q_dim': 5, 'out_dim': 2, 'hidden_dim': 4, 'num_layers': 2}
+# spe_dims: {'pe_dim': 10, 'q_dim': 5, 'out_dim': 8, 'hidden_dim': 16, 'num_layers': 2}
+
+lambda_train: [5, 0]
+dual: True
+
+# Hparams for additional features
+rrwp_steps: 20
+restart_prob: 0.1
+
+# Hparams for partial pos_enc
+pos_enc_frac: 1  # 0.5, '1' 
+pos_enc_mode: 'first' # 'random', 'first'

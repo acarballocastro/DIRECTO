@@ -1,0 +1,1 @@
+This code was reproduced and slightly adapted from the original paper *D-VAE: A Variational Autoencoder for Directed Acyclic Graphs* (Zhang *et al.*, 2019). Changes were made for data pre-processing. Their original code is available in [their GitHub repo](https://github.com/muhanzhang/D-VAE).
