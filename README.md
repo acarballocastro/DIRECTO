@@ -1,5 +1,9 @@
 # Directo: Generating Directed Graphs with Dual Attention and Asymmetric Encoding
 
+  A Pytorch implementation to generated directed graphs in the discrete flow matching framework.
+  
+  Paper: https://arxiv.org/abs/2506.16404
+
 ## 💻 Environment installation
 
 There are two options for environment installation: a **conda environment** or using **pixi**.
@@ -88,3 +92,14 @@ python main.py +experiment=visual_genome dataset=visual_genome dataset.acyclic=F
 ## 🧪 Baselines
 
 Baseline experiments follow a similar procedure and their adaptation can be found in the [`src/baselines`](src/baselines) directory.
+
+## 📚 Citation
+
+```bibtex
+@article{carballo2025directo,
+  title     = {Generating Directed Graphs with Dual Attention and Asymmetric Encoding},
+  author    = {Carballo-Castro, Alba and Madeira, Manuel and Qin, Yiming and Thanou, Dorina and Frossard, Pascal},
+  year      = {2025},
+  url       = {https://arxiv.org/abs/2506.16404}
+}
+```
