@@ -46,6 +46,7 @@ class GraphDiscreteFlowModel(pl.LightningModule):
         self.cfg = cfg
         self.name = f"{cfg.dataset.name}_{cfg.general.name}"
         self.model_dtype = torch.float32
+        self.conditional = cfg.general.conditional
         self.test_labels = test_labels
 
         # number of steps used for sampling
@@ -141,6 +142,10 @@ class GraphDiscreteFlowModel(pl.LightningModule):
         if data.edge_index.numel() == 0:
             self.print("Found a batch with no edges. Skipping.")
             return
+        
+        if self.conditional:
+            if torch.rand(1) < 0.1:
+                data.y = torch.ones_like(data.y, device=self.device) * -1
 
         dense_data, node_mask = utils.to_dense(
             data.x,
@@ -227,7 +232,7 @@ class GraphDiscreteFlowModel(pl.LightningModule):
         if self.val_counter % self.cfg.general.sample_every_val == 0:
             print("Starting to sample")
             samples, labels = self.sample(
-                is_test=False, save_samples=False, save_visualization=True
+                is_test=False, save_samples=False, save_visualization=False
             )
             to_log = self.evaluate_samples(
                 samples=samples, labels=labels, is_test=False
@@ -329,6 +334,7 @@ class GraphDiscreteFlowModel(pl.LightningModule):
                 keep_chain=chains_save,
                 number_chain_steps=num_chain_steps,
                 save_visualization=save_visualization,
+                test=is_test
             )
             samples.extend(cur_samples)
             labels.extend(cur_labels)
@@ -483,7 +489,8 @@ class GraphDiscreteFlowModel(pl.LightningModule):
         number_chain_steps: int,
         save_final: int,
         num_nodes=None,
-        save_visualization: bool = True,
+        save_visualization: bool = False,
+        test: bool = False
     ):
         """
         :param batch_id: int
@@ -517,6 +524,39 @@ class GraphDiscreteFlowModel(pl.LightningModule):
             node_mask=node_mask,
             directed=self.directed,
         )
+        if self.conditional:
+            if "qm9" in self.cfg.dataset.name:
+                y = self.test_labels
+                perm = torch.randperm(y.size(0))
+                idx = perm[:100]
+                condition = y[idx]
+                condition = condition.to(self.device)
+                z_T.y = condition.repeat([10, 1])[:batch_size, :]
+            elif "tls" in self.cfg.dataset.name:
+                z_T.y = torch.zeros(batch_size, 1).to(self.device)
+                z_T.y[: batch_size // 2] = 1
+            elif "tpu_tile" in self.cfg.dataset.name:
+                y = self.test_labels
+                counts, bin_edges = torch.histogram(y)
+                probs = counts.float() / counts.sum()
+                distribution = torch.distributions.Categorical(probs)
+
+                if test:
+                    # For sampling
+                    condition = y[batch_id : (batch_id + batch_size)]
+                    condition = condition.to(self.device)
+                else:
+                    # For training
+                    sample = distribution.sample((batch_size,))
+                    bin_left = bin_edges[sample]
+                    bin_right = bin_edges[sample + 1]
+                    condition = torch.randn_like(bin_left) * (bin_right - bin_left) + bin_left
+                    condition = condition.unsqueeze(1).to(self.device)
+
+                z_T.y = condition
+
+            else:
+                raise NotImplementedError
         X, E, y = z_T.X, z_T.E, z_T.y
 
         # Init chain storing variables
@@ -714,6 +754,35 @@ class GraphDiscreteFlowModel(pl.LightningModule):
             G_1_pred,
         )
 
+        if self.conditional:
+            uncond_y = torch.ones_like(y_t, device=self.device) * -1
+            noisy_data["y_t"] = uncond_y
+
+            extra_data = self.compute_extra_data(noisy_data)
+            pred = self.forward(noisy_data, extra_data, node_mask)
+
+            pred_X = F.softmax(pred.X, dim=-1)  # bs, n, d0
+            pred_E = F.softmax(pred.E, dim=-1)  # bs, n, n, d0
+
+            R_t_X_uncond, R_t_E_uncond = (
+                self.rate_matrix_designer.compute_graph_rate_matrix(
+                    t,
+                    node_mask,
+                    G_t,
+                    G_1_pred,
+                )
+            )
+
+            guidance_weight = self.cfg.general.guidance_weight
+            R_t_X = torch.exp(
+                torch.log(R_t_X_uncond + 1e-6) * (1 - guidance_weight)
+                + torch.log(R_t_X + 1e-6) * guidance_weight
+            )
+            R_t_E = torch.exp(
+                torch.log(R_t_E_uncond + 1e-6) * (1 - guidance_weight)
+                + torch.log(R_t_E + 1e-6) * guidance_weight
+            )
+
         prob_X, prob_E = self.compute_step_probs(
             R_t_X, R_t_E, X_t, E_t, dt, limit_x, limit_e
         )
@@ -731,7 +800,10 @@ class GraphDiscreteFlowModel(pl.LightningModule):
         # assert (E_s == torch.transpose(E_s, 1, 2)).all() # Remove symmetrization assert
         assert (X_t.shape == X_s.shape) and (E_t.shape == E_s.shape)
 
-        y_to_save = torch.zeros([y_t.shape[0], 0], device=self.device)
+        if self.conditional:
+            y_to_save = y_t
+        else:
+            y_to_save = torch.zeros([y_t.shape[0], 0], device=self.device)
 
         out_one_hot = utils.PlaceHolder(X=X_s, E=E_s, y=y_to_save)
         out_discrete = utils.PlaceHolder(X=X_s, E=E_s, y=y_to_save)
@@ -775,13 +847,10 @@ class GraphDiscreteFlowModel(pl.LightningModule):
         """
 
         num_step_list = [100] #[50, 1000]  # [5, 10, 50, 100, 1000]
-        # num_step_list = [5, 10]  # [5, 10, 50, 100, 1000]
-        if self.cfg.dataset.name in "qm9":
-            # num_step_list = [1, 5, 10, 50, 100, 500]
-            num_step_list = [5, 10]
-        if self.cfg.dataset.name == "guacamol":  # accelerate
-            num_step_list = [50]
-        if self.cfg.dataset.name == "moses":  # accelerate
+ 
+        if self.cfg.dataset.name == "qm9":
+            num_step_list = [1, 5, 10, 50, 100, 500]
+        if self.cfg.dataset.name in ["guacamol", 'moses']:  # accelerate 
             num_step_list = [50]
 
         if self.cfg.sample.search == "all":
@@ -854,6 +923,7 @@ class GraphDiscreteFlowModel(pl.LightningModule):
             for eta in eta_list:
                 self.cfg.sample.sample_steps = num_step
                 self.cfg.sample.eta = eta
+                self.rate_matrix_designer.eta = eta
                 print(
                     f"############# Testing num steps: {num_step}, eta: {eta} #############"
                 )
@@ -908,6 +978,7 @@ class GraphDiscreteFlowModel(pl.LightningModule):
             for omega in omega_list:
                 self.cfg.sample.sample_steps = num_step
                 self.cfg.sample.omega = omega
+                self.rate_matrix_designer.omega = omega
                 print(
                     f"############# Testing num steps: {num_step}, omega: {omega} #############"
                 )

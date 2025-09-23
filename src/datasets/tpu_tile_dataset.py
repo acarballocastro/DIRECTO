@@ -13,9 +13,10 @@ class TPUGraphDataset(InMemoryDataset):
     """
 
     def __init__(
-        self, split, root, transform=None, pre_transform=None, pre_filter=None
+        self, split, root, conditional, transform=None, pre_transform=None, pre_filter=None
     ):
         self.split = split
+        self.conditional = conditional
         super().__init__(root, transform, pre_transform, pre_filter)
         self.data, self.slices = torch.load(self.processed_paths[0])
 
@@ -63,7 +64,12 @@ class TPUGraphDataset(InMemoryDataset):
             edge_attr = torch.zeros(edge_index.shape[-1], 2, dtype=torch.float)
             edge_attr[:, 1] = 1
             x = F.one_hot(x_n, num_classes=47).float()
-            y = torch.zeros([1, 0]).float()
+
+            if self.conditional:
+                # If conditional, we need to add the label as a node feature
+                y = torch.tensor(y, dtype=torch.float).reshape((1, 1))
+            else:
+                y = torch.zeros([1, 0]).float()
             # TODO: we remove the label information because it is continuous and not supported
             # y = torch.tensor(y, dtype=torch.float).reshape((1, 1))
             num_nodes = x.size(0)
@@ -92,10 +98,12 @@ class TPUGraphDataModule(AbstractDataModule):
         root_path = os.path.join(base_path, self.datadir)
 
         datasets = {
-            "train": TPUGraphDataset(split="train", root=root_path),
-            "val": TPUGraphDataset(split="val", root=root_path),
-            "test": TPUGraphDataset(split="test", root=root_path),
+            "train": TPUGraphDataset(split="train", root=root_path, conditional=cfg.general.conditional),
+            "val": TPUGraphDataset(split="val", root=root_path, conditional=cfg.general.conditional),
+            "test": TPUGraphDataset(split="test", root=root_path, conditional=cfg.general.conditional),
         }
+
+        self.test_labels = torch.vstack((datasets["train"].data.y, datasets["val"].data.y))
 
         super().__init__(cfg, datasets)
         self.inner = self.train_dataset

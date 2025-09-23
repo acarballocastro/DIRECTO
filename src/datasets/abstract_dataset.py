@@ -144,7 +144,7 @@ class AbstractDatasetInfos:
         self.output_dims = {
             "X": example_batch["x"].size(1),
             "E": example_batch["edge_attr"].size(1),
-            "y": 0,
+            "y": example_batch["y"].size(1),
         }
 
     def compute_reference_metrics(self, datamodule, sampling_metrics):

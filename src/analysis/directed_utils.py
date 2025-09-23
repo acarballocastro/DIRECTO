@@ -6,6 +6,9 @@ import concurrent.futures
 from functools import partial
 from tqdm import tqdm
 
+import torch
+import dgl
+
 import pygsp as pg
 from scipy.linalg import eigvalsh
 from scipy.stats import chi2, ks_2samp, powerlaw
@@ -13,6 +16,11 @@ from src.analysis.dist_helper import (
     compute_mmd,
     gaussian_emd,
     gaussian_tv,
+)
+from src.metrics.neural_metrics import (
+    FIDEvaluation,
+    MMDEvaluation,
+    load_feature_extractor
 )
 from src.metrics.abstract_metrics import compute_ratios
 from torch_geometric.utils import to_networkx
@@ -23,7 +31,6 @@ import time
 ############################ Distributional measures ############################
 
 # Degree distribution -----------------------------------------------------------
-
 
 def degree_worker(G, is_out=True):
     if is_out:
@@ -89,7 +96,6 @@ def degree_stats(
 
 
 # Cluster coefficient -----------------------------------------------------------
-
 
 def clustering_worker(param):
     G, bins = param
@@ -161,7 +167,6 @@ def clustering_stats(
 
 # Spectre -----------------------------------------------------------------------
 
-
 def spectral_worker(G, n_eigvals=-1):
     # eigs = nx.laplacian_spectrum(G)
     try:
@@ -230,7 +235,6 @@ def spectral_stats(
 
 
 # Wavelet -----------------------------------------------------------------------
-
 
 def eigh_worker(G):
     L = np.asarray(nx.directed_laplacian_matrix(G, walk_type="pagerank"))
@@ -345,9 +349,166 @@ def spectral_filter_stats(
     #     print("Time computing spectral filter stats: ", elapsed)
     return mmd_dist
 
+############################ Node distribution measures ############################
+
+## Node count ------------------------------------------------------------
+def node_count_worker(G):
+    return np.array([G.number_of_nodes()])
+
+def node_count_stats(graph_ref_list, graph_pred_list, is_parallel=True):
+    sample_ref = []
+    sample_pred = []
+
+    graph_pred_list_remove_empty = [G for G in graph_pred_list if G.number_of_nodes() > 0]
+
+    if is_parallel:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for count in executor.map(node_count_worker, graph_ref_list):
+                sample_ref.append(count)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for count in executor.map(node_count_worker, graph_pred_list_remove_empty):
+                sample_pred.append(count)
+    else:
+        for G in graph_ref_list:
+            sample_ref.append(np.array([G.number_of_nodes()]))
+        for G in graph_pred_list_remove_empty:
+            sample_pred.append(np.array([G.number_of_nodes()]))
+
+    mmd_dist = compute_mmd(sample_ref, sample_pred, kernel=gaussian_tv)
+    return mmd_dist
+
+## Node type distribution ------------------------------------------------------------
+def node_type_worker(G, num_classes=None):
+    """
+    Computes normalized histogram of node label distribution.
+    """
+    labels = [G.nodes[n]["label"] for n in G.nodes]
+    if not labels:
+        return np.zeros(num_classes if num_classes else 1)
+
+    max_label = max(labels)
+    num_classes = num_classes or (max_label + 1)
+
+    hist = np.zeros(num_classes)
+    for label in labels:
+        hist[label] += 1
+
+    hist = hist / hist.sum()  # normalize
+    return hist
+
+def node_type_stats(graph_ref_list, graph_pred_list, is_parallel=True):
+    sample_ref = []
+    sample_pred = []
+
+    graph_pred_list_remove_empty = [G for G in graph_pred_list if G.number_of_nodes() > 0]
+
+    if is_parallel:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for counts in executor.map(node_type_worker, graph_ref_list):
+                sample_ref.append(counts)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for counts in executor.map(node_type_worker, graph_pred_list_remove_empty):
+                sample_pred.append(counts)
+    else:
+        for G in graph_ref_list:
+            sample_ref.append(node_type_worker(G))
+        for G in graph_pred_list_remove_empty:
+            sample_pred.append(node_type_worker(G))
+
+    mmd_dist = compute_mmd(sample_ref, sample_pred, kernel=gaussian_tv)
+    return mmd_dist
+
+## Precision@K, Recall@K, F1@K ------------------------------------------------------------
+
+def extract_triplets(G, is_scene_graph=False, type_checker=None):
+    """
+    Extract triplets from a graph.
+    
+    If scene graph, use semantic rules.
+    Otherwise, treat edges as (label_u, "connects", label_v).
+    
+    Args:
+        G: networkx.DiGraph
+        is_scene_graph: whether this is a scene graph
+        type_checker: an object with is_object_node(), is_relationship_node(), etc.
+    
+    Returns:
+        A set of triplets (str or int depending on source).
+    """
+    triplets = set()
+
+    if is_scene_graph:
+        for node in G.nodes():
+            label = G.nodes[node]["label"]
+
+            if type_checker.is_relationship_node(label):
+                # rel: obj1 <- rel -> obj2
+                in_edges = list(G.in_edges(node))
+                out_edges = list(G.out_edges(node))
+
+                if len(in_edges) == 1 and len(out_edges) == 1:
+                    subj = G.nodes[in_edges[0][0]]["label"]
+                    obj = G.nodes[out_edges[0][1]]["label"]
+                    triplets.add((subj, label, obj))
+
+            elif type_checker.is_attribute_node(label):
+                # attr: attr -> obj
+                in_edges = list(G.in_edges(node))
+                if len(in_edges) == 1:
+                    obj = G.nodes[in_edges[0][0]]["label"]
+                    triplets.add((label, "describes", obj))
+
+    else:
+        # Generic case: edge-based triplets from labels
+        for u, v in G.edges():
+            src_label = G.nodes[u].get("label", u)
+            dst_label = G.nodes[v].get("label", v)
+            triplets.add((src_label, "connects", dst_label))
+
+    return triplets
+
+from collections import Counter
+
+def precision_recall_at_k(
+    generated_graphs,
+    ground_truth_graphs,
+    is_scene_graph=False,
+    type_checker=None
+):
+    """
+    Compute Precision@K and Recall@K using extracted symbolic triplets.
+
+    Args:
+        generated_graphs: list of generated NetworkX graphs
+        ground_truth_graphs: list of reference NetworkX graphs
+        k: number of top ground truth triplets to compare
+        is_scene_graph: bool, set True for semantic scene graphs
+        type_checker: object with type-checking functions if scene_graph=True
+
+    Returns:
+        precision_k: float
+        recall_k: float
+    """
+    # Extract all triplets in training and generated graphs
+    gt_set = set()
+    for G in ground_truth_graphs:
+        triplets = extract_triplets(G, is_scene_graph, type_checker)
+        gt_set.update(triplets)
+
+    gen_set = set()
+    for G in generated_graphs:
+        triplets = extract_triplets(G, is_scene_graph, type_checker)
+        gen_set.update(triplets)
+
+    # Precision & Recall
+    matched = gt_set & gen_set
+
+    precision = len(matched) / len(gen_set) if gen_set else 0.0
+    recall = len(matched) / len(gt_set) if gt_set else 0.0
+
+    return precision, recall
 
 ############################ Validity measures ############################
-
 
 def is_erdos_renyi(G, acyclic=False, expected_p=0.6, strict=True):
     """
@@ -865,6 +1026,41 @@ class DirectedSamplingMetrics(nn.Module):
     def is_scene_graph(self, G):
         pass
 
+    def neural_metrics(self, generated):
+        # set seed
+        seed = 0
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        # Neural metrics
+        gin_model = load_feature_extractor(device='cpu')  # take a gin-model with predefined params and random weights
+        fid_evaluator = FIDEvaluation(model=gin_model)
+        rbf_evaluator = MMDEvaluation(model=gin_model, kernel='rbf', sigma='range', multiplier='mean')
+        # pass the generated graphs and reference graphs to networkx
+        generated_max_comp = []
+        test_max_comp = []
+        for g in generated:
+            # largest_cc = max(nx.connected_components(g), key=len)
+            # g = g.subgraph(largest_cc)
+            g = dgl.DGLGraph(g)
+            generated_max_comp.append(g)  
+        for g in self.test_digraphs:
+            # largest_cc = max(nx.connected_components(g), key=len)
+            # g = g.subgraph(largest_cc)
+            g = dgl.DGLGraph(g)
+            test_max_comp.append(g)
+
+        (generated_dataset, reference_dataset), _ = fid_evaluator.get_activations(generated_max_comp, test_max_comp)
+        fid, _ = fid_evaluator.evaluate(
+                            generated_dataset=generated_dataset,
+                            reference_dataset=reference_dataset)
+        rbf, _ = rbf_evaluator.evaluate(
+                            generated_dataset=generated_dataset,
+                            reference_dataset=reference_dataset)
+        
+        return fid, rbf
+
     def forward(
         self,
         generated_graphs: list,
@@ -988,6 +1184,44 @@ class DirectedSamplingMetrics(nn.Module):
             to_log[f"{metrics_prefix}/wavelet"] = wavelet
             # if wandb.run:
             #     wandb.run.summary["wavelet"] = wavelet
+        
+        if "node_count" in self.metrics_list:
+            if local_rank == 0:
+                print("Computing node count stats...")
+            node_count = node_count_stats(
+                reference_digraphs, networkx_digraphs, is_parallel=True
+            )
+            to_log[f"{metrics_prefix}/node_count"] = node_count
+        
+        if "node_type" in self.metrics_list:
+            if local_rank == 0:
+                print("Computing node type stats...")
+            node_type = node_type_stats(
+                reference_digraphs, networkx_digraphs, is_parallel=True
+            )
+            to_log[f"{metrics_prefix}/node_type"] = node_type
+
+        if "precision_recall" in self.metrics_list:
+            if local_rank == 0:
+                print("Computing precision and recall at k...")
+            precision, recall = precision_recall_at_k(
+                generated_graphs=networkx_digraphs,
+                ground_truth_graphs=reference_digraphs,
+                is_scene_graph=self.graph_type in ["visual_genome"],
+                type_checker=self if self.graph_type in ["visual_genome"] else None,
+            )
+            to_log[f"{metrics_prefix}/precision"] = precision
+            to_log[f"{metrics_prefix}/recall"] = recall
+
+        if "neural" in self.metrics_list:
+            print("Computing neural metrics including FID and RBF MMD")
+            fid, rbf = self.neural_metrics(networkx_digraphs)
+            to_log["fid"] = fid['fid']
+            to_log["rbf mmd"] = rbf['mmd_rbf']
+
+            if wandb.run is not None:
+                    wandb.run.summary["fid"] = fid['fid']
+                    wandb.run.summary["rbf mmd"] = rbf['mmd_rbf']
 
         if "connected" in self.metrics_list:
             if local_rank == 0:
@@ -1101,6 +1335,10 @@ class DirectedSamplingMetrics(nn.Module):
                 f"{metrics_prefix}/clustering",
                 f"{metrics_prefix}/spectre",
                 f"{metrics_prefix}/wavelet",
+                # f"{metrics_prefix}/neural",
+                # f"{metrics_prefix}/node_count",
+                # f"{metrics_prefix}/node_type",
+                # f"{metrics_prefix}/precision_recall",
             ],
         )
         to_log.update(ratios)
@@ -1156,6 +1394,10 @@ class TPUSamplingMetrics(DirectedSamplingMetrics):
                 "dag",
                 "valid",
                 "unique",
+                "neural",
+                # "node_count",
+                "node_type",
+                # "precision_recall",
             ],
             graph_type="tpu_tile",
             compute_emd=False, 
@@ -1180,6 +1422,11 @@ class VisualGenomeSamplingMetrics(DirectedSamplingMetrics):
                 "valid",
                 "unique",
                 "scene_graph",
+                "neural",
+                "node_count",
+                "node_type",
+                "precision_recall",
+
             ],
             graph_type="visual_genome",
             compute_emd=False, 

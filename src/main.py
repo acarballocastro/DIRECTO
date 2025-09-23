@@ -219,6 +219,11 @@ def main(cfg: DictConfig):
             "visualization_tools": visualization_tools,
             "extra_features": extra_features,
             "domain_features": domain_features,
+            "test_labels": (
+            datamodule.test_labels
+            if cfg.general.conditional
+            else None
+            ),
         }
 
     elif dataset_config["name"] in ["visual_genome"]:
