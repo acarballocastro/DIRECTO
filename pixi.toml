@@ -1,6 +1,6 @@
 [workspace]
 authors = ["acarballocastro <alba.carballocastro@epfl.ch>"]
-channels = ["conda-forge","nvidia", "pytorch"]
+channels = ["conda-forge","nvidia", "pytorch", "dglteam/label/th24_cu121"]
 name = "Directo"
 platforms = ["linux-64"]
 version = "1.0.1"
@@ -16,6 +16,7 @@ rdkit = "*"
 graph-tool = "==2.97"
 pytorch-gpu = "==2.4.0"
 psi4 = "==1.9.1"
+dgl = { version = "*", channel = "dglteam/label/th24_cu121" }
 
 [pypi-dependencies]
 ipykernel = "==6.29.5"
@@ -33,7 +34,8 @@ scipy = ">=1.11.0"
 setuptools = "==68.0.0"
 torch_geometric = "==2.3.1"
 torchmetrics = "==0.11.4"
-tqdm = "==4.65.0"
+tqdm = ">=4.65.0"
+torchdata = "*"
 wandb = "*"
 seaborn = "==0.13.2"
 gpustat = "==0.6.0"
