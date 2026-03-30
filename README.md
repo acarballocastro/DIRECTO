@@ -2,7 +2,9 @@
 
   A Pytorch implementation to generated directed graphs in the discrete flow matching framework.
   
-  Paper: https://arxiv.org/abs/2506.16404
+  > Paper: https://arxiv.org/abs/2506.16404
+  
+  > Website: https://iclr.cc/virtual/2026/poster/10007092
 
 ## 💻 Environment installation
 
@@ -96,10 +98,10 @@ Baseline experiments follow a similar procedure and their adaptation can be foun
 ## 📚 Citation
 
 ```bibtex
-@article{carballo2025directo,
+@article{carballo2026directo,
   title     = {Generating Directed Graphs with Dual Attention and Asymmetric Encoding},
   author    = {Carballo-Castro, Alba and Madeira, Manuel and Qin, Yiming and Thanou, Dorina and Frossard, Pascal},
-  year      = {2025},
-  url       = {https://arxiv.org/abs/2506.16404}
+  year      = {2026},
+  journal   = {International Conference on Learning Representations (ICLR)}
 }
 ```
