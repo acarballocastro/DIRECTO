@@ -21,6 +21,6 @@ train:
     #save_model: True
 
 model:
-    extra_features: null
+    extra_features: rrwp-ppr
     rrwp_steps: 20
     restart_prob: 0.1
