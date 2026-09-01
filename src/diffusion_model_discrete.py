@@ -86,7 +86,6 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 hidden_mlp_dims=cfg.model.hidden_mlp_dims,
                 hidden_dims=cfg.model.hidden_dims,
                 output_dims=output_dims,
-                spe_dims=cfg.model.spe_dims,
                 act_fn_in=nn.ReLU(),
                 act_fn_out=nn.ReLU(),
                 dual=cfg.model.dual,

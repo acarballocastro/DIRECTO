@@ -10,7 +10,7 @@ from torch import Tensor
 
 from src import utils
 from src.diffusion import diffusion_utils
-from src.models.layers import Xtoy, Etoy, masked_softmax, SPENodes, SPEEdges
+from src.models.layers import Xtoy, Etoy, masked_softmax
 
 
 def get_timing_signal_1d(
@@ -516,7 +516,6 @@ class GraphTransformerDirected(nn.Module):
         hidden_mlp_dims: dict,
         hidden_dims: dict,
         output_dims: dict,
-        spe_dims: dict,
         act_fn_in: nn.ReLU,
         act_fn_out: nn.ReLU,
         dual: bool,
@@ -535,19 +534,15 @@ class GraphTransformerDirected(nn.Module):
         self.out_dim_E = output_dims["E"]
         self.out_dim_y = output_dims["y"]
 
-        # self.spe_q_dim = spe_dims["q_dim"] if pos_enc == "spe" else 0
-        # self.spe_pe_dim = spe_dims["pe_dim"] if pos_enc == "spe" else 0
-        # self.spe_out_dim = spe_dims["out_dim"] if pos_enc == "spe" else 0
-
         self.mlp_in_X = nn.Sequential(
-            nn.Linear(input_dims["X"] + self.spe_out_dim, hidden_mlp_dims["X"]),
+            nn.Linear(input_dims["X"], hidden_mlp_dims["X"]),
             act_fn_in,
             nn.Linear(hidden_mlp_dims["X"], hidden_dims["dx"]),
             act_fn_in,
         )
 
         self.mlp_in_E = nn.Sequential(
-            nn.Linear(input_dims["E"] + self.spe_out_dim, hidden_mlp_dims["E"]),
+            nn.Linear(input_dims["E"], hidden_mlp_dims["E"]),
             act_fn_in,
             nn.Linear(hidden_mlp_dims["E"], hidden_dims["de"]),
             act_fn_in,
@@ -593,24 +588,6 @@ class GraphTransformerDirected(nn.Module):
             nn.Linear(hidden_mlp_dims["y"], output_dims["y"]),
         )
 
-        # Experiments trying to use an SPE network for positional encoding
-        # self.spe_nodes = SPENodes(
-        #     pe_dim=spe_dims["pe_dim"],
-        #     q_dim=spe_dims["q_dim"],
-        #     out_dim=spe_dims["out_dim"],
-        #     hidden_dim=spe_dims["hidden_dim"],
-        #     num_layers=spe_dims["num_layers"],
-        #     norm=None,
-        # )
-        # self.spe_edges = SPEEdges(
-        #     pe_dim=spe_dims["pe_dim"],
-        #     q_dim=spe_dims["q_dim"],
-        #     out_dim=spe_dims["out_dim"],
-        #     hidden_dim=spe_dims["hidden_dim"],
-        #     num_layers=spe_dims["num_layers"],
-        #     norm=None,
-        # )
-
     def forward(self, X, E, y, node_mask, edge_index=None, batch=None):
         bs, n = X.shape[0], X.shape[1]
 
@@ -622,33 +599,6 @@ class GraphTransformerDirected(nn.Module):
         E_to_out = E[..., : self.out_dim_E]
         y_to_out = y[..., : self.out_dim_y]
 
-        # if self.pos_enc == "spe":
-        #     # Prepare the eigenvalues and eigenvectors
-        #     eigenvalues = y[..., self.out_dim_y :][:, 1:-1].reshape(
-        #         bs, self.spe_q_dim, self.spe_pe_dim
-        #     )  # (b, q, k)
-        #     evec0 = X[..., self.out_dim_X :].reshape(
-        #         bs, n, 2 * self.spe_q_dim - 1, self.spe_pe_dim
-        #     )
-        #     eigenvectors = torch.cat(
-        #         (
-        #             torch.complex(
-        #                 evec0[:, :, 0], torch.zeros_like(evec0[:, :, 0])
-        #             ).unsqueeze(2),
-        #             torch.complex(evec0[:, :, 1::2], evec0[:, :, 2::2]),
-        #         ),
-        #         dim=2,
-        #     )  # (b, n, q, k)
-
-        #     # Pass through SPE network
-        #     spe_nodes = self.spe_nodes(
-        #         eigenvalues, eigenvectors, node_mask, edge_index, batch
-        #     )
-        #     spe_edges = self.spe_edges(eigenvalues, eigenvectors, node_mask)
-
-        #     X = torch.cat((X, spe_nodes), dim=-1)
-        #     E = torch.cat((E, spe_edges), dim=-1)
-
         new_E = self.mlp_in_E(E)
         if not self.directed:
             new_E = 1 / 2 * (new_E + torch.transpose(new_E, 1, 2))
@@ -657,25 +607,6 @@ class GraphTransformerDirected(nn.Module):
             X=self.mlp_in_X(X), E=new_E, y=self.mlp_in_y(y)
         ).mask(node_mask, directed=self.directed)
         X, E, y = after_in.X, after_in.E, after_in.y
-
-        # Experiments with other positional encodings
-        # if self.pos_enc not in ["none", "spe"]:
-        #     if self.pos_enc == "sinusoidal":
-        #         pe = get_timing_signal_1d(
-        #             X.shape[1], X.shape[2], device=X.device
-        #         ).expand(bs, -1, -1)
-
-        #     elif self.pos_enc == "rope":
-        #         pe = get_rope_encoding(X.shape[1], X.shape[2], device=X.device).expand(
-        #             bs, -1, -1
-        #         )
-
-        #     else:
-        #         raise NotImplementedError(
-        #             f"Positional encoding {self.pos_enc} not implemented"
-        #         )
-    
-        #     X = X + pe
 
         for layer in self.tf_layers:
             X, E, y = layer(X, E, y, node_mask)  
