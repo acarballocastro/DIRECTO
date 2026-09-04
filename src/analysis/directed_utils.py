@@ -27,6 +27,8 @@ from torch_geometric.utils import to_networkx
 
 import wandb
 import time
+import multiprocessing
+import queue
 
 ############################ Distributional measures ############################
 
@@ -653,6 +655,58 @@ def is_sbm_graph(G, p_intra=0.3, p_inter=0.01, strict=True, refinement_steps=100
         return p
 
 
+def _is_sbm_graph_wrapper(G_data, params, result_queue):
+    """Run is_sbm_graph safely in a subprocess."""
+    try:
+        p_intra, p_inter, strict, refinement_steps = params
+        # Preserve direction: callers pass directed adjacency matrices.
+        G = nx.from_numpy_array(G_data, create_using=nx.DiGraph)
+        result = is_sbm_graph(
+            G,
+            p_intra=p_intra,
+            p_inter=p_inter,
+            strict=strict,
+            refinement_steps=refinement_steps,
+        )
+        result_queue.put(result)
+    except Exception as e:
+        result_queue.put(e)
+
+
+def safe_is_sbm_graph(G, p_intra=0.3, p_inter=0.005, strict=True, refinement_steps=100, timeout=180):
+    """Run is_sbm_graph in an isolated process with crash/timeout protection.
+    """
+    adj = nx.adjacency_matrix(G).toarray()
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    params = (p_intra, p_inter, strict, refinement_steps)
+    process = ctx.Process(
+        target=_is_sbm_graph_wrapper, args=(adj, params, result_queue)
+    )
+    process.start()
+    process.join(timeout=timeout)
+
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        print("SBM evaluation timed out.")
+        return False
+
+    if process.exitcode != 0:
+        print(f"SBM process exited with code {process.exitcode} (likely segfault or double free).")
+        return False
+
+    try:
+        result = result_queue.get_nowait()
+        if isinstance(result, Exception):
+            print(f"Error in SBM evaluation: {result}")
+            return False
+        return bool(result) if strict else result
+    except queue.Empty:
+        print("SBM process finished but did not return a result.")
+        return False
+
+
 def eval_acc_sbm_graph(
     G_list,
     p_intra=0.3,
@@ -663,9 +717,10 @@ def eval_acc_sbm_graph(
 ):
     count = 0.0
     if is_parallel:
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        max_workers = min(4, max(1, len(G_list)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             for prob in executor.map(
-                is_sbm_graph,
+                safe_is_sbm_graph,
                 [gg for gg in G_list],
                 [p_intra for i in range(len(G_list))],
                 [p_inter for i in range(len(G_list))],
@@ -675,7 +730,7 @@ def eval_acc_sbm_graph(
                 count += prob
     else:
         for gg in tqdm(G_list):
-            count += is_sbm_graph(
+            count += safe_is_sbm_graph(
                 gg,
                 p_intra=p_intra,
                 p_inter=p_inter,
@@ -858,44 +913,31 @@ def eval_fraction_unique_non_isomorphic_valid(
     return frac_unique, frac_unique_non_isomorphic, frac_unique_non_isomorphic_valid
 
 
-import threading
+import signal
 
 
-def is_isomorphic_worker(fake_g, train_g, result_container):
-    """Worker function to check isomorphism and store the result."""
-    is_attributed = "label" in train_g.nodes[0]
-    node_match_fn = lambda x, y: x["label"] == y["label"] if is_attributed else None
-    result_container.append(
-        # nx.is_isomorphic(
-        #     fake_g, train_g
-        # )
-        nx.is_isomorphic(
-            fake_g,
-            train_g,
-            node_match=node_match_fn,
-        )
-    )  # Store result in a shared list
+def _isomorphism_alarm_handler(signum, frame):
+    raise TimeoutError()
 
 
 def is_isomorphic_with_timeout(fake_g, train_g, timeout=5):
-    """Check if two graphs are isomorphic with a timeout (fixed thread-based)."""
-    result_container = []  # Shared list to store the result
-    thread = threading.Thread(
-        target=is_isomorphic_worker,
-        args=(fake_g, train_g, result_container),
-        daemon=True,
-    )
-    thread.start()
-
-    thread.join(timeout)  # Wait for the thread to finish within timeout
-
-    if thread.is_alive():
+    """Check if two graphs are isomorphic with a wall-clock timeout.
+    """
+    old_handler = signal.signal(signal.SIGALRM, _isomorphism_alarm_handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        is_attributed = "label" in train_g.nodes[0]
+        node_match_fn = (
+            (lambda x, y: x["label"] == y["label"]) if is_attributed else None
+        )
+        result = nx.is_isomorphic(fake_g, train_g, node_match=node_match_fn)
+        return False, result
+    except TimeoutError:
         print("is_isomorphic took too long!")
         return True, False  # Timeout occurred
-
-    return False, (
-        result_container[0] if result_container else False
-    )  # Return actual result if available
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 def time_eval_fraction_unique_non_isomorphic_valid(
@@ -987,6 +1029,7 @@ class DirectedSamplingMetrics(nn.Module):
         self.compute_emd = compute_emd
         self.metrics_list = metrics_list
         self.graph_type = graph_type
+        self.num_node_classes = None
 
         # Store for wavelet computaiton
         self.val_ref_eigvals, self.val_ref_eigvecs = compute_list_eigh(
@@ -1026,6 +1069,25 @@ class DirectedSamplingMetrics(nn.Module):
     def is_scene_graph(self, G):
         pass
 
+    def _nx_to_dgl(self, g, use_labels):
+        """Convert a networkx (di)graph to a DGL graph for the neural metrics.
+
+        When ``use_labels`` is True the integer ``"label"`` node attribute is
+        transferred and stored as a one-hot float feature under ``ndata['attr']``
+        so the GNN encodes node labels alongside structure. Otherwise the graph
+        is returned without node features and the extractor falls back to
+        degree-based features.
+        """
+        if use_labels:
+            g = dgl.from_networkx(g, node_attrs=["label"])
+            labels = g.ndata.pop("label").long()
+            g.ndata["attr"] = torch.nn.functional.one_hot(
+                labels, num_classes=self.num_node_classes
+            ).float()
+        else:
+            g = dgl.from_networkx(g)
+        return g
+
     def neural_metrics(self, generated):
         # set seed
         seed = 0
@@ -1033,23 +1095,20 @@ class DirectedSamplingMetrics(nn.Module):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-        # Neural metrics
-        gin_model = load_feature_extractor(device='cpu')  # take a gin-model with predefined params and random weights
+        # Neural metrics.
+        use_labels = self.num_node_classes is not None
+        input_dim = self.num_node_classes if use_labels else 1
+
+        gin_model = load_feature_extractor(
+            device='cpu', input_dim=input_dim, node_feat_loc='attr'
+        )  # a gin-model with predefined params and random weights
         fid_evaluator = FIDEvaluation(model=gin_model)
         rbf_evaluator = MMDEvaluation(model=gin_model, kernel='rbf', sigma='range', multiplier='mean')
-        # pass the generated graphs and reference graphs to networkx
-        generated_max_comp = []
-        test_max_comp = []
-        for g in generated:
-            # largest_cc = max(nx.connected_components(g), key=len)
-            # g = g.subgraph(largest_cc)
-            g = dgl.DGLGraph(g)
-            generated_max_comp.append(g)  
-        for g in self.test_digraphs:
-            # largest_cc = max(nx.connected_components(g), key=len)
-            # g = g.subgraph(largest_cc)
-            g = dgl.DGLGraph(g)
-            test_max_comp.append(g)
+
+        # Convert the networkx (di)graphs to DGL graphs, transferring node
+        # labels as one-hot features when the dataset is labeled.
+        generated_max_comp = [self._nx_to_dgl(g, use_labels) for g in generated]
+        test_max_comp = [self._nx_to_dgl(g, use_labels) for g in self.test_digraphs]
 
         (generated_dataset, reference_dataset), _ = fid_evaluator.get_activations(generated_max_comp, test_max_comp)
         fid, _ = fid_evaluator.evaluate(
@@ -1400,8 +1459,9 @@ class TPUSamplingMetrics(DirectedSamplingMetrics):
                 # "precision_recall",
             ],
             graph_type="tpu_tile",
-            compute_emd=False, 
+            compute_emd=False,
         )
+        self.num_node_classes = datamodule.cfg.dataset.num_node_classes
 
     # Override loader so that the node labels are kept
     def loader_to_nx(self, loader, directed=False):
@@ -1434,6 +1494,9 @@ class VisualGenomeSamplingMetrics(DirectedSamplingMetrics):
         self.num_objects = datamodule.cfg.dataset.num_objects
         self.num_relationships = datamodule.cfg.dataset.num_relationships
         self.num_attributes = datamodule.cfg.dataset.num_attributes
+        self.num_node_classes = (
+            self.num_objects + self.num_relationships + self.num_attributes
+        )
 
     # Override loader so that the node labels are kept
     def loader_to_nx(self, loader, directed=False):
